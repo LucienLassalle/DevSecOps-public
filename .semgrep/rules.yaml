@@ -1,0 +1,7 @@
+rules:
+  - id: interdire-eval-python
+    languages:
+      - python
+    severity: ERROR
+    message: "L'utilisation de eval() est interdite dans ce projet."
+    pattern: eval(...)

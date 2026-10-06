@@ -1,0 +1,4 @@
+# Ajouter Traefik aux composants désactivés sans remplacer la liste existante.
+disable+:
+  - traefik
+write-kubeconfig-mode: "0600"

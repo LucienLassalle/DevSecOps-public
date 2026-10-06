@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}Delivery Desk{% endblock %}</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+  <aside class="sidebar">
+    <a class="brand" href="{{ url_for('index') }}"><span class="brand-icon">D</span> Delivery Desk</a>
+    <div class="workspace-label">ESPACE PROJET</div>
+    <a class="nav-item" href="{{ url_for('index') }}"><span>▦</span> Demandes de livraison</a>
+    <div class="sidebar-bottom"><span class="dot"></span> Application de démonstration<br><small>Secure Delivery Platform · v{{ version }}</small></div>
+  </aside>
+  <div class="page">
+    <header class="topbar"><span>Projet DevSecOps <span class="separator">/</span> Application</span><span class="local-badge">DÉMONSTRATION</span></header>
+    <main>{% block content %}{% endblock %}</main>
+    <footer>Delivery Desk <span>Une application simple, du commit à la livraison.</span></footer>
+  </div>
+</body>
+</html>

@@ -1,0 +1,345 @@
+name: Secure Delivery Platform
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  verification:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+
+    steps:
+      - name: Récupérer le code
+        uses: actions/checkout@v6
+
+      - name: Installer les dépendances
+        run: |
+          python3 -m venv .venv
+          .venv/bin/python -m pip install -r requirements.txt
+          .venv/bin/python -m pip install ruff
+
+      - name: Vérifier les erreurs de code
+        run: .venv/bin/ruff check --select E9,F63,F7,F82 .
+
+      - name: Vérifier la syntaxe des scripts Linux
+        run: |
+          for script in scripts/*.sh; do
+            bash -n "$script"
+          done
+
+      - name: Exécuter les tests
+        run: .venv/bin/python -m unittest discover -s tests -v
+
+      - name: Démarrer l'application
+        run: |
+          nohup .venv/bin/python -m flask --app wsgi run \
+            --host 127.0.0.1 --port 8000 \
+            > /tmp/delivery-desk.log 2>&1 &
+
+          for _ in $(seq 1 30); do
+            if curl --fail --silent http://127.0.0.1:8000/readyz; then
+              exit 0
+            fi
+            sleep 1
+          done
+
+          cat /tmp/delivery-desk.log
+          exit 1
+
+      - name: Analyser l'application avec ZAP
+        uses: zaproxy/action-baseline@v0.15.0
+        with:
+          target: http://127.0.0.1:8000
+          allow_issue_writing: false
+          fail_action: false
+          artifact_name: rapport-zap
+
+      - name: Vérifier les alertes ZAP bloquantes
+        run: python3 scripts/check_zap_report.py
+
+  gitleaks:
+    name: Vérifier les secrets
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+
+    steps:
+      - name: Récupérer le code et son historique
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Rechercher les secrets
+        uses: gitleaks/gitleaks-action@v3
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_ENABLE_COMMENTS: "false"
+          GITLEAKS_ENABLE_UPLOAD_ARTIFACT: "true"
+
+  semgrep:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+
+    steps:
+      - name: Récupérer le code
+        uses: actions/checkout@v6
+
+      - name: Installer Semgrep
+        run: |
+          python3 -m venv .venv-semgrep
+          .venv-semgrep/bin/python -m pip install semgrep
+
+      - name: Produire le rapport Semgrep complet
+        run: |
+          .venv-semgrep/bin/semgrep scan \
+            --config p/python \
+            --config p/flask \
+            --config .semgrep/rules.yaml \
+            --strict \
+            --metrics=off \
+            --json-output=semgrep.json \
+            app wsgi.py
+
+      - name: Vérifier les règles SAST bloquantes
+        run: |
+          .venv-semgrep/bin/semgrep scan \
+            --config .semgrep/rules.yaml \
+            --error \
+            --strict \
+            --metrics=off \
+            app wsgi.py
+
+      - name: Conserver le rapport
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: rapport-semgrep
+          path: semgrep.json
+          if-no-files-found: warn
+
+  dependencies:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+
+    steps:
+      - name: Récupérer le code
+        uses: actions/checkout@v6
+
+      - name: Produire le rapport complet
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          scanners: vuln
+          format: json
+          output: trivy-dependencies.json
+          severity: UNKNOWN,LOW,MEDIUM,HIGH,CRITICAL
+          exit-code: "0"
+
+      - name: Bloquer les vulnérabilités graves
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          scanners: vuln
+          format: table
+          severity: HIGH,CRITICAL
+          exit-code: "1"
+
+      - name: Conserver le rapport
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: rapport-dependances
+          path: trivy-dependencies.json
+          if-no-files-found: warn
+
+  iac:
+    name: Vérifier les configurations Docker et Kubernetes
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Récupérer le code
+        uses: actions/checkout@v6
+
+      - name: Produire le rapport IaC complet
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          scan-type: config
+          scan-ref: .
+          format: json
+          output: trivy-iac.json
+          severity: UNKNOWN,LOW,MEDIUM,HIGH,CRITICAL
+          exit-code: "0"
+
+      - name: Bloquer les mauvaises configurations graves
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          scan-type: config
+          scan-ref: .
+          format: table
+          severity: HIGH,CRITICAL
+          exit-code: "1"
+
+      - name: Conserver le rapport IaC
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: rapport-iac
+          path: trivy-iac.json
+          if-no-files-found: warn
+
+  image:
+    name: Construire et vérifier l'image
+    needs: [verification, gitleaks, semgrep, dependencies, iac]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+
+    steps:
+      - name: Récupérer le code
+        uses: actions/checkout@v6
+
+      - name: Construire l'image Docker
+        run: |
+          docker build --pull \
+            -t delivery-desk:${{ github.sha }} .
+
+      - name: Produire le rapport complet
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          scan-type: image
+          image-ref: delivery-desk:${{ github.sha }}
+          scanners: vuln
+          format: json
+          output: trivy-image.json
+          severity: UNKNOWN,LOW,MEDIUM,HIGH,CRITICAL
+          ignore-unfixed: false
+          exit-code: "0"
+
+      - name: Bloquer les vulnérabilités graves
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          scan-type: image
+          image-ref: delivery-desk:${{ github.sha }}
+          scanners: vuln
+          format: table
+          severity: HIGH,CRITICAL
+          ignore-unfixed: false
+          exit-code: "1"
+
+      - name: Conserver le rapport
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: rapport-image
+          path: trivy-image.json
+          if-no-files-found: warn
+
+      - name: Sauvegarder l'image validée pour la publication
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: docker save delivery-desk:${{ github.sha }} -o delivery-image.tar
+
+      - name: Transférer l'image validée
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: actions/upload-artifact@v7
+        with:
+          name: image-validee-${{ github.sha }}
+          path: delivery-image.tar
+          if-no-files-found: error
+          retention-days: 1
+
+
+  publication:
+    name: Publier l'image validée sur GHCR
+    needs: [verification, gitleaks, semgrep, dependencies, iac, image]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      image: ${{ steps.publish.outputs.image }}
+
+    steps:
+      - name: Récupérer l'image validée
+        uses: actions/download-artifact@v8
+        with:
+          name: image-validee-${{ github.sha }}
+          digest-mismatch: error
+
+      - name: Charger l'image sans la reconstruire
+        run: docker load -i delivery-image.tar
+
+      - name: Se connecter à GHCR
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: printf '%s' "$GHCR_TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+
+      - name: Publier l'image avec le SHA du commit
+        id: publish
+        run: |
+          image="ghcr.io/${GITHUB_REPOSITORY,,}:${GITHUB_SHA}"
+          docker tag "delivery-desk:${GITHUB_SHA}" "$image"
+          docker push "$image"
+          digest_ref=$(docker inspect --format '{{index .RepoDigests 0}}' "$image")
+          [[ "$digest_ref" =~ ^ghcr\.io/[a-z0-9._/-]+@sha256:[0-9a-f]{64}$ ]]
+          printf 'image=%s\n' "$digest_ref" >> "$GITHUB_OUTPUT"
+          printf 'Image publiée : %s\n' "$image" >> "$GITHUB_STEP_SUMMARY"
+          printf 'Référence immuable : %s\n' "$digest_ref" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Fermer la connexion à GHCR
+        if: always()
+        run: docker logout ghcr.io
+
+  deployment:
+    name: Déployer sur la VM K3s
+    needs: [verification, gitleaks, semgrep, dependencies, iac, image, publication]
+    # Déploiement suspendu pendant les tests sur le dépôt public.
+    # Pour réactiver : github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: ${{ false }}
+    runs-on: [self-hosted, linux, x64, delivery-k3s]
+    timeout-minutes: 10
+    concurrency:
+      group: delivery-k3s
+      cancel-in-progress: false
+    steps:
+      - name: Récupérer le code validé
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Déployer l'image publiée et tester la disponibilité
+        env:
+          DELIVERY_IMAGE: ${{ needs.publication.outputs.image }}
+        run: |
+          set -o pipefail
+          bash scripts/deploy.sh "$DELIVERY_IMAGE" | tee deployment-status.txt
+          printf 'Image déployée : %s\n' "$DELIVERY_IMAGE" >> "$GITHUB_STEP_SUMMARY"
+          printf 'Application disponible sur le port 30080 de la VM.\n' >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Collecter le diagnostic en cas d'échec
+        if: failure()
+        run: |
+          export KUBECONFIG="$HOME/.kube/delivery-ci.yaml"
+          {
+            kubectl -n delivery get pods,svc,pvc
+            kubectl -n delivery get events --sort-by=.metadata.creationTimestamp
+            kubectl -n delivery logs deployment/delivery-desk --tail=100
+          } >> deployment-status.txt 2>&1 || true
+
+      - name: Conserver la trace du déploiement
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: rapport-deploiement
+          path: deployment-status.txt
+          if-no-files-found: warn

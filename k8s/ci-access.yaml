@@ -1,0 +1,40 @@
+# À appliquer une fois par l'administrateur, pas par le job de déploiement.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: delivery-ci
+  namespace: delivery
+automountServiceAccountToken: false
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: delivery-ci
+  namespace: delivery
+rules:
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get", "list", "watch", "create", "patch"]
+  - apiGroups: [""]
+    resources: ["services", "persistentvolumeclaims"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["pods", "events"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["pods/log"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: delivery-ci
+  namespace: delivery
+subjects:
+  - kind: ServiceAccount
+    name: delivery-ci
+    namespace: delivery
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: delivery-ci

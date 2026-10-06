@@ -1,0 +1,8 @@
+{% extends 'base.html' %}
+{% block title %}{{ delivery.name }} · Delivery Desk{% endblock %}
+{% block content %}
+<a class="text-link" href="{{ url_for('index') }}">← Toutes les demandes</a>
+<div class="page-heading"><div><p class="eyebrow">DEMANDE #{{ '%03d'|format(delivery.id) }}</p><h1>{{ delivery.name }}</h1><p class="subtitle">Version {{ delivery.release }} · {{ environments[delivery.environment] }}</p></div><span class="badge {{ delivery.status }}">{{ statuses[delivery.status] }}</span></div>
+<div class="detail-grid"><section class="panel form-panel"><h2>Informations de livraison</h2><dl><dt>Créée le (UTC)</dt><dd>{{ delivery.created_at[:19]|replace('T', ' à ') }}</dd><dt>Notes de livraison</dt><dd class="description">{{ delivery.description or 'Aucune note pour cette livraison.' }}</dd></dl><hr><h2>Mettre à jour le statut</h2><form method="post" action="{{ url_for('update_status', delivery_id=delivery.id) }}"><input type="hidden" name="csrf_token" value="{{ session.csrf_token }}"><label for="status">Avancement déclaré</label><select id="status" name="status">{% for key, label in statuses.items() %}<option value="{{ key }}" {% if delivery.status == key %}selected{% endif %}>{{ label }}</option>{% endfor %}</select><p class="muted">Cette action enregistre un statut ; elle ne lance pas de déploiement.</p><button class="button" type="submit">Enregistrer</button></form></section>
+<section class="panel form-panel"><h2>Historique</h2><p class="muted">Les événements de cette demande.</p><ol class="timeline">{% for event in events %}<li><strong>{{ event.action }}</strong><small>{{ event.created_at[:19]|replace('T', ' · ') }} UTC</small></li>{% endfor %}</ol></section></div>
+{% endblock %}
