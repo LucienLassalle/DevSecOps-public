@@ -123,4 +123,7 @@ Sur un push vers `main`, le workflow prévoit aussi une publication sur GHCR et 
 
 ## Limites
 
-SQLite et la stratégie Kubernetes `Recreate` imposent une seule instance et une interruption lors des mises à jour. L'historique ne contient pas d'identité utilisateur et n'est pas un journal d'audit immuable. Un usage partagé nécessite notamment authentification, autorisations, HTTPS et sauvegardes. Les scans ne garantissent pas l'absence de vulnérabilités.
+SQLite et la stratégie Kubernetes `Recreate` imposent une seule instance et une interruption lors des mises à jour.
+L'historique ne contient pas d'identité utilisateur et n'est pas un journal d'audit immuable.
+Un usage partagé nécessite notamment authentification, autorisations, HTTPS et sauvegardes.
+**Les scans ne garantissent pas l'absence de vulnérabilités.**
